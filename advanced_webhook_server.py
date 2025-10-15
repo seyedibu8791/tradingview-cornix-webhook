@@ -8,8 +8,8 @@ from typing import Dict, Optional
 app = Flask(__name__)
 
 # Configuration from environment variables (for Render deployment)
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+TELEGRAM_BOT_TOKEN = os.environ.get('8438363590:AAE4D4x0Hu70Z0Gr7lrJ_BYwp1s1Yye1hW8', '')
+TELEGRAM_CHAT_ID = os.environ.get('-1003177570257', '')
 
 # Store active trades with entry details
 active_trades: Dict[str, dict] = {}
