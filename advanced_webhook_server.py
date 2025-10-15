@@ -1,14 +1,15 @@
 from flask import Flask, request, jsonify
 import requests
 import json
+import os
 from datetime import datetime
 from typing import Dict, Optional
 
 app = Flask(__name__)
 
-# Configuration
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
+# Configuration from environment variables (for Render deployment)
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
 # Store active trades with entry details
 active_trades: Dict[str, dict] = {}
@@ -38,26 +39,16 @@ class TrailingStopCalculator:
         Calculate exit price for long pump scenario
         Matches: long_ts_pump logic
         """
-        # Calculate profit
         profit_percent = abs((high_price - entry_price) / entry_price * 100)
-        
-        # Get dynamic trailing stop
         ts_pump = self.ts_dynamic(profit_percent)
         
-        # Check pump trailing stop conditions
         activation_price = entry_price * (1 + self.act_ts_pump / 100)
         trail_trigger = activation_price * (1 + ts_pump / 100)
         close_ts_level = close_price * (1 + ts_pump / 100)
         
-        # high > last_open_longCondition * (1 + Act_ts_pump / 100) * (1 + ts_pump / 100)
-        # high > last_open_longCondition * (1 + Act_ts_pump / 100)
-        # high >= close * (1 + ts_pump / 100)
-        
         if (high_price > trail_trigger and 
             high_price > activation_price and 
             high_price >= close_ts_level):
-            # Calculate actual exit price (trailing stop hit)
-            # Exit occurs at: entry * (1 + act_ts_pump%) * (1 + ts_pump%)
             exit_price = activation_price * (1 + ts_pump / 100)
             return round(exit_price, 8)
         
@@ -68,13 +59,9 @@ class TrailingStopCalculator:
         Calculate exit price for short dump scenario
         Matches: short_ts_pump logic
         """
-        # Calculate profit
         profit_percent = abs((low_price - entry_price) / entry_price * 100)
-        
-        # Get dynamic trailing stop
         ts_pump = self.ts_dynamic(profit_percent)
         
-        # Check dump trailing stop conditions
         activation_price = entry_price * (1 - self.act_ts_pump / 100)
         trail_trigger = activation_price * (1 - ts_pump / 100)
         close_ts_level = close_price * (1 - ts_pump / 100)
@@ -82,7 +69,6 @@ class TrailingStopCalculator:
         if (low_price < trail_trigger and 
             low_price < activation_price and 
             low_price <= close_ts_level):
-            # Calculate actual exit price
             exit_price = activation_price * (1 - ts_pump / 100)
             return round(exit_price, 8)
         
@@ -120,11 +106,14 @@ class TrailingStopCalculator:
         
         return None
 
-# Initialize calculator
 ts_calc = TrailingStopCalculator()
 
 def send_telegram_message(message: str) -> Optional[dict]:
     """Send message to Telegram"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("ERROR: Telegram credentials not configured")
+        return None
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -142,26 +131,22 @@ def calculate_take_profit(entry_price: float, action: str) -> float:
     """Calculate 5% take profit from entry price"""
     if action.upper() == "BUY":
         return round(entry_price * 1.05, 8)
-    else:  # SELL
+    else:
         return round(entry_price * 0.95, 8)
 
 def calculate_stop_loss(entry_price: float, action: str, stop_percent: float = 3) -> float:
     """Calculate stop loss (default 3% from entry)"""
     if action.upper() == "BUY":
         return round(entry_price * (1 - stop_percent/100), 8)
-    else:  # SELL
+    else:
         return round(entry_price * (1 + stop_percent/100), 8)
 
 def process_exit_price(data: dict) -> float:
-    """
-    Process exit price based on exit type and market data
-    Handles pump/dump scenarios with proper trailing stop logic
-    """
+    """Process exit price based on exit type and market data"""
     ticker = data.get('ticker', '').upper()
     exit_type = data.get('exit_type', 'unknown')
     raw_exit_price = float(data.get('exit_price', 0))
     
-    # Get stored trade info
     trade_info = active_trades.get(ticker)
     if not trade_info:
         return raw_exit_price
@@ -169,12 +154,10 @@ def process_exit_price(data: dict) -> float:
     entry_price = trade_info['entry_price']
     action = trade_info['action']
     
-    # Get additional price data if available
     high_price = float(data.get('high', raw_exit_price))
     low_price = float(data.get('low', raw_exit_price))
     close_price = float(data.get('close', raw_exit_price))
     
-    # Process based on exit type
     if exit_type == 'pump_trailing' and action == 'BUY':
         calculated_exit = ts_calc.calculate_long_pump_exit(entry_price, high_price, close_price)
         return calculated_exit if calculated_exit else raw_exit_price
@@ -202,7 +185,6 @@ def format_entry_signal(data: dict) -> str:
     take_profit = calculate_take_profit(entry_price, action)
     stop_loss = calculate_stop_loss(entry_price, action)
     
-    # Store trade info for exit signal
     active_trades[ticker] = {
         'action': action,
         'entry_price': entry_price,
@@ -228,14 +210,9 @@ Leverage: Isolated (20X)
 def format_exit_signal(data: dict) -> str:
     """Format exit signal for Cornix"""
     ticker = data.get('ticker', '').upper()
-    
-    # Process exit price with trailing stop logic
     exit_price = process_exit_price(data)
-    
-    # Simple Cornix format to update TP and close trade
     message = f"#{ticker} Tp {exit_price}"
     
-    # Log exit details
     if ticker in active_trades:
         trade = active_trades[ticker]
         profit_pct = ((exit_price - trade['entry_price']) / trade['entry_price']) * 100
@@ -256,8 +233,7 @@ def webhook():
         if not data:
             return jsonify({"status": "error", "message": "No data received"}), 400
         
-        # Log received data
-        print(f"Received webhook data: {json.dumps(data, indent=2)}")
+        print(f"Received: {json.dumps(data, indent=2)}")
         
         signal_type = data.get('type', 'entry').lower()
         
@@ -268,7 +244,6 @@ def webhook():
         else:
             return jsonify({"status": "error", "message": "Invalid signal type"}), 400
         
-        # Send to Telegram
         result = send_telegram_message(message)
         
         if result:
@@ -285,11 +260,8 @@ def webhook():
             }), 500
             
     except Exception as e:
-        print(f"Error processing webhook: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        print(f"Error: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -309,15 +281,24 @@ def get_trades():
         "count": len(active_trades)
     }), 200
 
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint"""
+    return jsonify({
+        "service": "TradingView to Cornix Webhook",
+        "status": "running",
+        "endpoints": {
+            "webhook": "/webhook (POST)",
+            "health": "/health (GET)",
+            "trades": "/trades (GET)"
+        }
+    }), 200
+
 if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
     print("=" * 50)
     print("TradingView to Cornix Webhook Server")
     print("=" * 50)
-    print("IMPORTANT: Update the following in the code:")
-    print("1. TELEGRAM_BOT_TOKEN")
-    print("2. TELEGRAM_CHAT_ID")
+    print(f"Server starting on port {port}")
     print("=" * 50)
-    print("Server starting on http://0.0.0.0:5000")
-    print("Webhook endpoint: http://YOUR_IP:5000/webhook")
-    print("=" * 50)
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=port)
